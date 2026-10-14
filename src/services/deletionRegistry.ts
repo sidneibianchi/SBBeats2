@@ -81,19 +81,24 @@ function normalizeSampleKey(key: string): string {
 /**
  * Marks a sample ID, name, or filename as permanently deleted
  */
-export function markSampleAsDeleted(sampleIdOrName: string, secondaryIdentifier?: string): void {
+export function markSampleAsDeleted(sampleIdOrName: string, secondaryIdentifier?: string, fileName?: string): void {
   if (!sampleIdOrName) return;
   try {
     const current = getDeletedSampleIds();
-    current.add(sampleIdOrName);
-    current.add(sampleIdOrName.toLowerCase());
-    current.add(normalizeSampleKey(sampleIdOrName));
+    const addAllVariants = (val?: string) => {
+      if (!val) return;
+      const clean = val.trim();
+      const lower = clean.toLowerCase();
+      const stem = normalizeSampleKey(clean);
+      current.add(clean);
+      current.add(lower);
+      current.add(stem);
+      current.add(`${stem}.wav`);
+    };
 
-    if (secondaryIdentifier) {
-      current.add(secondaryIdentifier);
-      current.add(secondaryIdentifier.toLowerCase());
-      current.add(normalizeSampleKey(secondaryIdentifier));
-    }
+    addAllVariants(sampleIdOrName);
+    addAllVariants(secondaryIdentifier);
+    addAllVariants(fileName);
 
     localStorage.setItem(DELETED_SAMPLES_KEY, JSON.stringify(Array.from(current)));
   } catch (err) {
@@ -108,25 +113,15 @@ export function isSampleDeleted(sampleId?: string, sampleName?: string, fileName
   const deleted = getDeletedSampleIds();
   if (deleted.size === 0) return false;
 
-  if (sampleId) {
-    if (deleted.has(sampleId) || deleted.has(sampleId.toLowerCase()) || deleted.has(normalizeSampleKey(sampleId))) {
-      return true;
-    }
-  }
+  const test = (val?: string) => {
+    if (!val) return false;
+    const clean = val.trim();
+    const lower = clean.toLowerCase();
+    const stem = normalizeSampleKey(clean);
+    return deleted.has(clean) || deleted.has(lower) || deleted.has(stem) || deleted.has(`${stem}.wav`);
+  };
 
-  if (sampleName) {
-    if (deleted.has(sampleName) || deleted.has(sampleName.toLowerCase()) || deleted.has(normalizeSampleKey(sampleName))) {
-      return true;
-    }
-  }
-
-  if (fileName) {
-    if (deleted.has(fileName) || deleted.has(fileName.toLowerCase()) || deleted.has(normalizeSampleKey(fileName))) {
-      return true;
-    }
-  }
-
-  return false;
+  return test(sampleId) || test(sampleName) || test(fileName);
 }
 
 /**
@@ -135,9 +130,36 @@ export function isSampleDeleted(sampleId?: string, sampleName?: string, fileName
 export function unmarkSampleAsDeleted(sampleId: string): void {
   try {
     const current = getDeletedSampleIds();
+    const stem = normalizeSampleKey(sampleId);
     current.delete(sampleId);
     current.delete(sampleId.toLowerCase());
-    current.delete(normalizeSampleKey(sampleId));
+    current.delete(stem);
+    current.delete(`${stem}.wav`);
     localStorage.setItem(DELETED_SAMPLES_KEY, JSON.stringify(Array.from(current)));
+  } catch {}
+}
+
+/**
+ * Synchronizes deleted registry from server API
+ */
+export async function syncDeletedRegistryFromServer(): Promise<void> {
+  try {
+    const resp = await fetch('/api/deleted_registry');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data && Array.isArray(data.deletedRhythms)) {
+      const currentR = getDeletedRhythmIds();
+      data.deletedRhythms.forEach((id: string) => currentR.add(id));
+      localStorage.setItem(DELETED_RHYTHMS_KEY, JSON.stringify(Array.from(currentR)));
+    }
+    if (data && Array.isArray(data.deletedSamples)) {
+      const currentS = getDeletedSampleIds();
+      data.deletedSamples.forEach((s: string) => {
+        currentS.add(s);
+        currentS.add(s.toLowerCase());
+        currentS.add(normalizeSampleKey(s));
+      });
+      localStorage.setItem(DELETED_SAMPLES_KEY, JSON.stringify(Array.from(currentS)));
+    }
   } catch {}
 }

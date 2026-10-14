@@ -41,12 +41,14 @@ interface SampleManagerModalProps {
   track: TrackDefinition;
   onClose: () => void;
   onUpdateTrackParams: (trackId: string, updates: Partial<TrackDefinition>) => void;
+  onDeleteSample?: (sampleId: string) => void;
 }
 
 export const SampleManagerModal: React.FC<SampleManagerModalProps> = ({
   track,
   onClose,
   onUpdateTrackParams,
+  onDeleteSample,
 }) => {
   const [samplesList, setSamplesList] = useState<Array<{ id: string; name: string }>>(() =>
     audioEngine.getCustomSamplesList()
@@ -68,6 +70,7 @@ export const SampleManagerModal: React.FC<SampleManagerModalProps> = ({
 
   const handleDeleteSample = async (sampleId: string, sampleName: string) => {
     await audioEngine.deleteCustomSample(sampleId);
+    onDeleteSample?.(sampleId);
     if (track.customSampleId === sampleId) {
       onUpdateTrackParams(track.id, {
         customSampleId: undefined,

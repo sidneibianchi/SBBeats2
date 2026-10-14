@@ -56,6 +56,7 @@ import {
   markRhythmAsDeleted,
   isSampleDeleted,
   markSampleAsDeleted,
+  syncDeletedRegistryFromServer,
 } from './services/deletionRegistry';
 
 export default function App() {
@@ -273,6 +274,11 @@ export default function App() {
   const performCloudSync = async () => {
     setIsSyncing(true);
     try {
+      // 0. Fetch deleted registry from server to ensure deletions are in sync
+      try {
+        await syncDeletedRegistryFromServer();
+      } catch {}
+
       // 1. Check local rhythms first to safeguard user edits
       let localRhythms: SongProject[] = [];
       try {
@@ -1397,19 +1403,24 @@ export default function App() {
     markRhythmAsDeleted(rhythmId);
     const nextList = rhythms.filter((r) => r.id !== rhythmId && !isRhythmDeleted(r.id));
     setRhythms(nextList);
+    const nextActive = nextList[0] || sambaPreset;
+
     try {
       localStorage.setItem('beatbuddy_rhythms', JSON.stringify(nextList));
+      localStorage.setItem('beatbuddy_active_rhythm_id', nextActive.id);
       saveRhythmsToServer(nextList).catch(() => {});
+      saveActiveRhythmToServer(nextActive.id).catch(() => {});
       fetch(`/api/rhythms/${encodeURIComponent(rhythmId)}`, { method: 'DELETE' }).catch(() => {});
       firebaseSyncService.deleteRhythm(rhythmId).catch(() => {});
     } catch (e) {
       console.error(e);
     }
-    const nextActive = nextList[0] || sambaPreset;
+
     setProject(nextActive);
     audioEngine.updateProject(nextActive);
     setActivePartId('verse');
     setPlayingPartId('verse');
+    triggerPedalToast('Ritmo excluído com sucesso.');
   };
 
   // --- Step & Sequencer Manipulation ---
@@ -1601,22 +1612,62 @@ export default function App() {
     });
   };
 
-  const handleDeleteSample = (sampleId: string) => {
+  const handleDeleteSample = async (sampleId: string) => {
     markSampleAsDeleted(sampleId);
-    audioEngine.deleteCustomSample(sampleId);
-    setProject((prev) => ({
-      ...prev,
-      tracks: prev.tracks.map((t) =>
-        t.customSampleId === sampleId
-          ? {
-              ...t,
-              customSampleId: undefined,
-              customSampleName: undefined,
-              soundType: 'kick',
-            }
-          : t
-      ),
-    }));
+    await audioEngine.deleteCustomSample(sampleId);
+
+    // 1. Update currently active rhythm
+    setProject((prev) => {
+      const updated = {
+        ...prev,
+        tracks: prev.tracks.map((t) =>
+          t.customSampleId === sampleId
+            ? {
+                ...t,
+                customSampleId: undefined,
+                customSampleName: undefined,
+                soundType: t.soundType === 'custom' ? ('kick' as const) : t.soundType,
+              }
+            : t
+        ),
+      };
+      audioEngine.updateProject(updated);
+      return updated;
+    });
+
+    // 2. Strip this deleted sample from all rhythms in library, then persist to localStorage & server
+    setRhythms((prevList) => {
+      const updatedList = prevList.map((rhythm) => ({
+        ...rhythm,
+        tracks: rhythm.tracks.map((t) =>
+          t.customSampleId === sampleId
+            ? {
+                ...t,
+                customSampleId: undefined,
+                customSampleName: undefined,
+                soundType: t.soundType === 'custom' ? ('kick' as const) : t.soundType,
+              }
+            : t
+        ),
+      }));
+
+      try {
+        localStorage.setItem('beatbuddy_rhythms', JSON.stringify(updatedList));
+        saveRhythmsToServer(updatedList).catch(() => {});
+        if (currentUser) {
+          updatedList.forEach((r) => {
+            firebaseSyncService.saveRhythm(r, currentUser).catch(() => {});
+          });
+        }
+      } catch (e) {
+        console.error('Failed to sync updated rhythms after sample deletion:', e);
+      }
+
+      return updatedList;
+    });
+
+    setCustomSamplesList(audioEngine.getCustomSamplesList());
+    triggerPedalToast('Sample excluído de todas as faixas e do disco.');
   };
 
   const handleRenameSample = (sampleId: string, newName: string) => {
@@ -2235,6 +2286,7 @@ export default function App() {
           track={editingTrack}
           onClose={() => setEditingTrack(null)}
           onUpdateTrackParams={handleUpdateTrackParams}
+          onDeleteSample={handleDeleteSample}
         />
       )}
 

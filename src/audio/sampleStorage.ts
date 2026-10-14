@@ -146,20 +146,34 @@ export async function deleteSampleFromStorage(id: string, name?: string): Promis
 
   try {
     const db = await openDatabase();
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      const req = store.delete(id);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
+      try { store.delete(id); } catch {}
+      if (name && name !== id) {
+        try { store.delete(name); } catch {}
+      }
+      const getAllReq = store.getAll();
+      getAllReq.onsuccess = () => {
+        const records = getAllReq.result || [];
+        for (const rec of records) {
+          if (rec.id === id || rec.name === id || (name && (rec.name === name || rec.id === name))) {
+            try { store.delete(rec.id); } catch {}
+          }
+        }
+        resolve();
+      };
+      getAllReq.onerror = () => resolve();
     });
 
     // Also delete from server API
-    fetch(`/api/samples/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch((e) => {
+    try {
+      await fetch(`/api/samples/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (name && name !== id) {
+        await fetch(`/api/samples/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      }
+    } catch (e) {
       console.warn('Failed to delete sample on server:', e);
-    });
-    if (name && name !== id) {
-      fetch(`/api/samples/${encodeURIComponent(name)}`, { method: 'DELETE' }).catch(() => {});
     }
 
     // Also delete from Firebase Firestore

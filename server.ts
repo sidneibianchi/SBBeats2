@@ -19,6 +19,19 @@ const DATA_DIR = path.resolve(__dirname, 'data');
 const SAMPLES_DIR = path.resolve(DATA_DIR, 'samples');
 const RHYTHMS_FILE = path.resolve(DATA_DIR, 'rhythms.json');
 const SAMPLES_INDEX_FILE = path.resolve(DATA_DIR, 'samples_index.json');
+const DATA_SAMPLES_INDEX_FILE = path.resolve(DATA_DIR, 'samples/index.json');
+const ACTIVE_RHYTHM_FILE = path.resolve(DATA_DIR, 'active_rhythm.json');
+const DELETED_REGISTRY_FILE = path.resolve(DATA_DIR, 'deleted_registry.json');
+
+const PUBLIC_DIR = path.resolve(__dirname, 'public');
+const PUBLIC_SAMPLES_DIR = path.resolve(PUBLIC_DIR, 'samples');
+const PUBLIC_RHYTHMS_FILE = path.resolve(PUBLIC_DIR, 'rhythms.json');
+const PUBLIC_SAMPLES_INDEX_FILE = path.resolve(PUBLIC_DIR, 'samples/index.json');
+const PUBLIC_ACTIVE_RHYTHM_FILE = path.resolve(PUBLIC_DIR, 'active_rhythm.json');
+const PUBLIC_DELETED_REGISTRY_FILE = path.resolve(PUBLIC_DIR, 'deleted_registry.json');
+
+const DIST_DIR = path.resolve(__dirname, 'dist');
+const DIST_SAMPLES_DIR = path.resolve(DIST_DIR, 'samples');
 
 // Ensure storage directories exist
 if (!fs.existsSync(DATA_DIR)) {
@@ -26,6 +39,12 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 if (!fs.existsSync(SAMPLES_DIR)) {
   fs.mkdirSync(SAMPLES_DIR, { recursive: true });
+}
+if (!fs.existsSync(PUBLIC_DIR)) {
+  fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+}
+if (!fs.existsSync(PUBLIC_SAMPLES_DIR)) {
+  fs.mkdirSync(PUBLIC_SAMPLES_DIR, { recursive: true });
 }
 
 interface StoredSampleMeta {
@@ -37,17 +56,71 @@ interface StoredSampleMeta {
   createdAt: number;
 }
 
-const PUBLIC_DIR = path.resolve(__dirname, 'public');
-const PUBLIC_RHYTHMS_FILE = path.resolve(PUBLIC_DIR, 'rhythms.json');
-const PUBLIC_SAMPLES_INDEX_FILE = path.resolve(PUBLIC_DIR, 'samples/index.json');
-const PUBLIC_ACTIVE_RHYTHM_FILE = path.resolve(PUBLIC_DIR, 'active_rhythm.json');
+interface DeletedRegistry {
+  deletedRhythms: string[];
+  deletedSamples: string[];
+}
+
+function loadDeletedRegistry(): DeletedRegistry {
+  try {
+    if (fs.existsSync(DELETED_REGISTRY_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DELETED_REGISTRY_FILE, 'utf-8'));
+      return {
+        deletedRhythms: Array.isArray(parsed.deletedRhythms) ? parsed.deletedRhythms : [],
+        deletedSamples: Array.isArray(parsed.deletedSamples) ? parsed.deletedSamples : [],
+      };
+    }
+    if (fs.existsSync(PUBLIC_DELETED_REGISTRY_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(PUBLIC_DELETED_REGISTRY_FILE, 'utf-8'));
+      return {
+        deletedRhythms: Array.isArray(parsed.deletedRhythms) ? parsed.deletedRhythms : [],
+        deletedSamples: Array.isArray(parsed.deletedSamples) ? parsed.deletedSamples : [],
+      };
+    }
+  } catch (e) {
+    console.error('Error loading deleted registry:', e);
+  }
+  return { deletedRhythms: [], deletedSamples: [] };
+}
+
+function markDeletedOnServer(type: 'rhythm' | 'sample', ...identifiers: (string | undefined)[]) {
+  try {
+    const reg = loadDeletedRegistry();
+    const set = new Set(type === 'rhythm' ? reg.deletedRhythms : reg.deletedSamples);
+    for (const id of identifiers) {
+      if (!id) continue;
+      const clean = id.trim();
+      set.add(clean);
+      set.add(clean.toLowerCase());
+      set.add(clean.toLowerCase().replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, ''));
+    }
+    if (type === 'rhythm') {
+      reg.deletedRhythms = Array.from(set);
+    } else {
+      reg.deletedSamples = Array.from(set);
+    }
+    const jsonStr = JSON.stringify(reg, null, 2);
+    fs.writeFileSync(DELETED_REGISTRY_FILE, jsonStr, 'utf-8');
+    fs.writeFileSync(PUBLIC_DELETED_REGISTRY_FILE, jsonStr, 'utf-8');
+    if (fs.existsSync(DIST_DIR)) {
+      fs.writeFileSync(path.resolve(DIST_DIR, 'deleted_registry.json'), jsonStr, 'utf-8');
+    }
+  } catch (e) {
+    console.error('Error saving deleted registry:', e);
+  }
+}
 
 function loadRhythms(): unknown[] {
+  const reg = loadDeletedRegistry();
+  const deletedSet = new Set(reg.deletedRhythms.map((r) => r.toLowerCase()));
+
   try {
     if (fs.existsSync(RHYTHMS_FILE)) {
       const data = fs.readFileSync(RHYTHMS_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((r) => r && r.id && !deletedSet.has(String(r.id).toLowerCase()));
+      }
     }
   } catch (err) {
     console.error('Error loading rhythms.json:', err);
@@ -56,7 +129,9 @@ function loadRhythms(): unknown[] {
     if (fs.existsSync(PUBLIC_RHYTHMS_FILE)) {
       const data = fs.readFileSync(PUBLIC_RHYTHMS_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((r) => r && r.id && !deletedSet.has(String(r.id).toLowerCase()));
+      }
     }
   } catch (err) {
     console.error('Error loading public/rhythms.json:', err);
@@ -68,21 +143,55 @@ function saveRhythms(rhythms: unknown[]) {
   try {
     const jsonStr = JSON.stringify(rhythms, null, 2);
     fs.writeFileSync(RHYTHMS_FILE, jsonStr, 'utf-8');
-    if (!fs.existsSync(PUBLIC_DIR)) {
-      fs.mkdirSync(PUBLIC_DIR, { recursive: true });
-    }
     fs.writeFileSync(PUBLIC_RHYTHMS_FILE, jsonStr, 'utf-8');
+    if (fs.existsSync(DIST_DIR)) {
+      fs.writeFileSync(path.resolve(DIST_DIR, 'rhythms.json'), jsonStr, 'utf-8');
+    }
   } catch (err) {
     console.error('Error saving rhythms.json:', err);
   }
 }
 
+function saveActiveRhythm(rhythmId: string) {
+  try {
+    const jsonStr = JSON.stringify({ rhythmId }, null, 2);
+    fs.writeFileSync(ACTIVE_RHYTHM_FILE, jsonStr, 'utf-8');
+    fs.writeFileSync(PUBLIC_ACTIVE_RHYTHM_FILE, jsonStr, 'utf-8');
+    if (fs.existsSync(DIST_DIR)) {
+      fs.writeFileSync(path.resolve(DIST_DIR, 'active_rhythm.json'), jsonStr, 'utf-8');
+    }
+  } catch (err) {
+    console.error('Error saving active rhythm file:', err);
+  }
+}
+
 function loadSamplesMeta(): StoredSampleMeta[] {
+  const reg = loadDeletedRegistry();
+  const deletedSet = new Set(reg.deletedSamples.map((s) => s.toLowerCase()));
+
+  const filterOutDeleted = (list: StoredSampleMeta[]) => {
+    return list.filter((s) => {
+      if (!s) return false;
+      const id = String(s.id || '').toLowerCase();
+      const name = String(s.name || '').toLowerCase();
+      const nameStem = name.replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, '');
+      const file = String(s.fileName || '').toLowerCase();
+      return (
+        !deletedSet.has(id) &&
+        !deletedSet.has(name) &&
+        !deletedSet.has(nameStem) &&
+        !deletedSet.has(file)
+      );
+    });
+  };
+
   try {
     if (fs.existsSync(SAMPLES_INDEX_FILE)) {
       const data = fs.readFileSync(SAMPLES_INDEX_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) {
+        return filterOutDeleted(parsed);
+      }
     }
   } catch (err) {
     console.error('Error loading samples_index.json:', err);
@@ -91,7 +200,9 @@ function loadSamplesMeta(): StoredSampleMeta[] {
     if (fs.existsSync(PUBLIC_SAMPLES_INDEX_FILE)) {
       const data = fs.readFileSync(PUBLIC_SAMPLES_INDEX_FILE, 'utf-8');
       const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) {
+        return filterOutDeleted(parsed);
+      }
     }
   } catch (err) {
     console.error('Error loading public samples index:', err);
@@ -102,15 +213,89 @@ function loadSamplesMeta(): StoredSampleMeta[] {
 function saveSamplesMeta(metaList: StoredSampleMeta[]) {
   try {
     const jsonStr = JSON.stringify(metaList, null, 2);
+    // 1. data/samples_index.json
     fs.writeFileSync(SAMPLES_INDEX_FILE, jsonStr, 'utf-8');
-    const pubSamplesDir = path.resolve(PUBLIC_DIR, 'samples');
-    if (!fs.existsSync(pubSamplesDir)) {
-      fs.mkdirSync(pubSamplesDir, { recursive: true });
-    }
+    // 2. data/samples/index.json
+    fs.writeFileSync(DATA_SAMPLES_INDEX_FILE, jsonStr, 'utf-8');
+    // 3. public/samples/index.json
     fs.writeFileSync(PUBLIC_SAMPLES_INDEX_FILE, jsonStr, 'utf-8');
+    // 4. dist/samples/index.json (if dist exists)
+    if (fs.existsSync(DIST_DIR)) {
+      if (!fs.existsSync(DIST_SAMPLES_DIR)) {
+        fs.mkdirSync(DIST_SAMPLES_DIR, { recursive: true });
+      }
+      fs.writeFileSync(path.resolve(DIST_SAMPLES_DIR, 'index.json'), jsonStr, 'utf-8');
+    }
   } catch (err) {
-    console.error('Error saving samples_index.json:', err);
+    console.error('Error saving samples index files:', err);
   }
+}
+
+function deleteSampleFilesFromDisk(identifier: string, sample?: StoredSampleMeta): string[] {
+  const dirs = [
+    SAMPLES_DIR,
+    PUBLIC_SAMPLES_DIR,
+    ...(fs.existsSync(DIST_SAMPLES_DIR) ? [DIST_SAMPLES_DIR] : []),
+  ];
+
+  const tokens = new Set<string>();
+  const addToken = (str?: string) => {
+    if (!str) return;
+    const clean = str.trim().toLowerCase();
+    if (!clean) return;
+    tokens.add(clean);
+    tokens.add(clean.replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, ''));
+  };
+
+  addToken(identifier);
+  if (sample) {
+    addToken(sample.id);
+    addToken(sample.name);
+    addToken(sample.fileName);
+  }
+
+  const removed: string[] = [];
+
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        if (file === 'index.json') continue;
+        const lowerFile = file.toLowerCase();
+        const lowerStem = file.toLowerCase().replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, '');
+
+        let match = false;
+        for (const tok of tokens) {
+          if (
+            lowerFile === tok ||
+            lowerStem === tok ||
+            lowerFile.startsWith(`${tok}.`) ||
+            (tok.startsWith('sample_') && lowerFile.startsWith(tok))
+          ) {
+            match = true;
+            break;
+          }
+        }
+
+        if (match) {
+          const fullPath = path.resolve(dir, file);
+          try {
+            if (fs.existsSync(fullPath)) {
+              fs.unlinkSync(fullPath);
+              removed.push(fullPath);
+            }
+          } catch (e) {
+            console.error(`Failed to delete file ${fullPath}:`, e);
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`Failed to scan dir ${dir} for deletion:`, e);
+    }
+  }
+
+  return removed;
 }
 
 // ================= API ENDPOINTS ================= //
@@ -133,7 +318,6 @@ app.post('/api/rhythms', (req: Request, res: Response) => {
 });
 
 // 2.1 Get & Set active rhythm
-const ACTIVE_RHYTHM_FILE = path.resolve(DATA_DIR, 'active_rhythm.json');
 app.get('/api/active_rhythm', (_req: Request, res: Response) => {
   try {
     if (fs.existsSync(ACTIVE_RHYTHM_FILE)) {
@@ -173,26 +357,35 @@ app.post('/api/active_rhythm', (req: Request, res: Response) => {
 // 2.2 Delete a rhythm permanently from disk & storage
 app.delete('/api/rhythms/:id', (req: Request, res: Response) => {
   const { id } = req.params;
+  markDeletedOnServer('rhythm', id);
+
   const rhythms = loadRhythms() as Array<{ id?: string }>;
   const filtered = rhythms.filter((r) => r && r.id !== id);
   saveRhythms(filtered);
 
   // If deleted rhythm was active, reset active rhythm to first remaining
   try {
+    let currentActiveId: string | null = null;
     if (fs.existsSync(ACTIVE_RHYTHM_FILE)) {
-      const activeData = JSON.parse(fs.readFileSync(ACTIVE_RHYTHM_FILE, 'utf-8'));
-      if (activeData.rhythmId === id) {
-        const nextId = (filtered[0] as { id?: string })?.id || '';
-        const payload = JSON.stringify({ rhythmId: nextId }, null, 2);
-        fs.writeFileSync(ACTIVE_RHYTHM_FILE, payload, 'utf-8');
-        if (fs.existsSync(PUBLIC_DIR)) {
-          fs.writeFileSync(PUBLIC_ACTIVE_RHYTHM_FILE, payload, 'utf-8');
-        }
-      }
+      currentActiveId = JSON.parse(fs.readFileSync(ACTIVE_RHYTHM_FILE, 'utf-8')).rhythmId;
+    } else if (fs.existsSync(PUBLIC_ACTIVE_RHYTHM_FILE)) {
+      currentActiveId = JSON.parse(fs.readFileSync(PUBLIC_ACTIVE_RHYTHM_FILE, 'utf-8')).rhythmId;
     }
-  } catch {}
+
+    if (currentActiveId === id || !currentActiveId) {
+      const nextId = (filtered[0] as { id?: string })?.id || '';
+      saveActiveRhythm(nextId);
+    }
+  } catch (e) {
+    console.error('Error updating active rhythm on delete:', e);
+  }
 
   res.json({ success: true, id, remaining: filtered.length });
+});
+
+// 2.3 Get deleted registry
+app.get('/api/deleted_registry', (_req: Request, res: Response) => {
+  res.json(loadDeletedRegistry());
 });
 
 // 3. Get all synced samples list
@@ -298,37 +491,82 @@ app.post('/api/samples', (req: Request, res: Response) => {
   }
 });
 
-// 6. Delete a sample
+// 6. Delete a sample permanently from disk, index files and rhythms
 app.delete('/api/samples/:id', (req: Request, res: Response) => {
   const { id } = req.params;
   const samples = loadSamplesMeta();
-  const sample = samples.find((s) => s.id === id || s.name === id || s.fileName === id);
+  const lowerId = id.toLowerCase();
+  const lowerStem = lowerId.replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, '');
+
+  const sample = samples.find((s) => {
+    const sId = (s.id || '').toLowerCase();
+    const sName = (s.name || '').toLowerCase();
+    const sStem = sName.replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, '');
+    const sFile = (s.fileName || '').toLowerCase();
+    return (
+      sId === lowerId ||
+      sName === lowerId ||
+      sStem === lowerStem ||
+      sFile === lowerId ||
+      sFile === `${lowerStem}.wav`
+    );
+  });
+
   const targetId = sample ? sample.id : id;
 
-  const filesToRemove = [
-    sample?.fileName,
-    sample?.name,
-    `${targetId}.wav`,
-    `${targetId}.webm`,
-    `${id}.wav`,
-    id,
-  ].filter(Boolean) as string[];
+  // 1. Mark as deleted in server-side registry so it is never re-indexed or served
+  markDeletedOnServer('sample', id, targetId, sample?.name, sample?.fileName);
 
-  for (const f of filesToRemove) {
-    const p1 = path.resolve(SAMPLES_DIR, f);
-    if (fs.existsSync(p1)) {
-      try { fs.unlinkSync(p1); } catch {}
-    }
-    const p2 = path.resolve(PUBLIC_DIR, 'samples', f);
-    if (fs.existsSync(p2)) {
-      try { fs.unlinkSync(p2); } catch {}
-    }
-  }
+  // 2. Permanently delete all matching audio files from data/samples, public/samples, and dist/samples
+  const removedFiles = deleteSampleFilesFromDisk(id, sample);
 
-  const filtered = samples.filter((s) => s.id !== targetId && s.id !== id && s.name !== id);
+  // 3. Update samples metadata in all index json files (data/samples_index.json, data/samples/index.json, public/samples/index.json, dist/samples/index.json)
+  const filtered = samples.filter((s) => {
+    const sId = (s.id || '').toLowerCase();
+    const sName = (s.name || '').toLowerCase();
+    const sStem = sName.replace(/\.(wav|mp3|ogg|webm|flac|m4a|aac)$/i, '');
+    const sFile = (s.fileName || '').toLowerCase();
+    return (
+      sId !== lowerId &&
+      sId !== targetId.toLowerCase() &&
+      sName !== lowerId &&
+      sStem !== lowerStem &&
+      sFile !== lowerId
+    );
+  });
   saveSamplesMeta(filtered);
 
-  res.json({ success: true, id: targetId });
+  // 4. Update rhythms.json: strip this deleted sample from all tracks across all rhythms
+  try {
+    const currentRhythms = loadRhythms() as any[];
+    let rhythmChanged = false;
+    for (const r of currentRhythms) {
+      if (r && Array.isArray(r.tracks)) {
+        for (const t of r.tracks) {
+          if (
+            t.customSampleId === targetId ||
+            t.customSampleId === id ||
+            (sample?.name && t.customSampleName === sample.name) ||
+            (sample?.name && t.name === sample.name)
+          ) {
+            t.customSampleId = undefined;
+            t.customSampleName = undefined;
+            if (t.soundType === 'custom') {
+              t.soundType = 'kick';
+            }
+            rhythmChanged = true;
+          }
+        }
+      }
+    }
+    if (rhythmChanged) {
+      saveRhythms(currentRhythms);
+    }
+  } catch (err) {
+    console.error('Error stripping sample from rhythms:', err);
+  }
+
+  res.json({ success: true, id: targetId, removedFilesCount: removedFiles.length });
 });
 
 // 7. Rename a sample
